@@ -502,7 +502,7 @@ impl Amm for ReflectAmm {
     }
 
     fn supports_exact_out(&self) -> bool {
-        false
+        true
     }
 }
 
