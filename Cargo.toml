@@ -2,5 +2,7 @@
 members = ["amm_reflect"]
 resolver = "2"
 
+default-members = ["amm_reflect"]
+
 [workspace.package]
 edition = "2021"

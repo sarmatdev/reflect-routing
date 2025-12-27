@@ -129,9 +129,8 @@ dependencies = [
  "ahash 0.8.12",
  "anyhow",
  "base64ct",
+ "jupiter-amm-interface",
  "rust_decimal",
- "serde",
- "serde_json",
  "solana-account-decoder",
  "solana-client",
  "solana-sdk",
@@ -2124,6 +2123,22 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+]
+
+[[package]]
+name = "jupiter-amm-interface"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db91d39569a7d9b2b0cd1007075abde274a590e57f8897cde517c6546d098638"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "borsh 0.10.4",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "solana-account-decoder",
+ "solana-sdk",
 ]
 
 [[package]]
