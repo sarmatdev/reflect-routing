@@ -4,12 +4,10 @@ use jupiter_amm_interface::{
     try_get_account_data, AccountMap, Amm, AmmContext, KeyedAccount, Quote,
     QuoteParams, Swap, SwapAndAccountMetas, SwapMode, SwapParams,
 };
-use math::{calculate_exact_in, calculate_exact_out};
 use solana_sdk::pubkey::Pubkey;
 use types::ReflectSwap;
 
 pub mod constants;
-mod math;
 mod types;
 
 #[derive(Clone, Debug, Default)]
@@ -39,8 +37,8 @@ pub struct ReflectAmm {
     pub usdc_oracle: Pubkey,
 
     // Rates
-    pub rate_100_usdc: u64,
-    pub rate_100_usdc_plus: u64,
+    pub protocol_tvl: u64,
+    pub effective_supply: u64,
 }
 
 impl ReflectAmm {
@@ -71,21 +69,8 @@ impl ReflectAmm {
             usdc_oracle: usdc_oracle::ID,
 
             // Rates
-            rate_100_usdc: 0,
-            rate_100_usdc_plus: 0,
-        }
-    }
-
-    fn get_rate_for_input_mint(
-        &self,
-        input_mint: &Pubkey,
-    ) -> anyhow::Result<u64> {
-        if *input_mint == usdc_mint::ID {
-            Ok(self.rate_100_usdc)
-        } else if *input_mint == usdc_plus_mint::ID {
-            Ok(self.rate_100_usdc_plus)
-        } else {
-            Err(anyhow!("Invalid input mint: {}", input_mint))
+            protocol_tvl: 0,
+            effective_supply: 0,
         }
     }
 }
@@ -139,43 +124,54 @@ impl Amm for ReflectAmm {
         let usdc_plus_controller =
             try_get_account_data(account_map, &self.usdc_plus_controller)?;
 
-        let dollaz_100: u64 = 100_000000;
+        let (protocol_tvl, supply) =
+            usdc_plus_exchange::get_exchange_components(
+                usdc_plus_controller,
+                drift_usdc_spot_market,
+                usdc_plus_drift_user_acc,
+                usdc_plus_mint,
+            )?;
 
-        // Get exchange for 100 USDC.
-        let usdc_plus_returned = usdc_plus_exchange::exchange_rate_usdc_input(
-            usdc_plus_controller,
-            drift_usdc_spot_market,
-            usdc_plus_drift_user_acc,
-            usdc_plus_mint,
-            dollaz_100,
-        )?;
-
-        self.rate_100_usdc = usdc_plus_returned;
-
-        // Get exchange for 100 USDC+.
-        let usdc_returned = usdc_plus_exchange::exchange_rate_receipt_input(
-            usdc_plus_controller,
-            drift_usdc_spot_market,
-            usdc_plus_drift_user_acc,
-            usdc_plus_mint,
-            dollaz_100,
-        )?;
-
-        self.rate_100_usdc_plus = usdc_returned;
+        self.protocol_tvl = protocol_tvl;
+        self.effective_supply = supply;
 
         Ok(())
     }
 
     fn quote(&self, quote_params: &QuoteParams) -> anyhow::Result<Quote> {
-        let rate = self.get_rate_for_input_mint(&quote_params.input_mint)?;
-
         let (in_amount, out_amount) = match quote_params.swap_mode {
             SwapMode::ExactIn => {
-                let out = calculate_exact_in(quote_params.amount, rate)?;
+                let out = if quote_params.input_mint == usdc_mint::ID {
+                    usdc_plus_exchange::compute_tokens_from_usdc(
+                        quote_params.amount,
+                        self.protocol_tvl,
+                        self.effective_supply,
+                    )?
+                } else {
+                    usdc_plus_exchange::compute_usdc_from_tokens(
+                        quote_params.amount,
+                        self.protocol_tvl,
+                        self.effective_supply,
+                    )?
+                };
                 (quote_params.amount, out)
             }
             SwapMode::ExactOut => {
-                let inp = calculate_exact_out(quote_params.amount, rate)?;
+                let inp = if quote_params.input_mint == usdc_mint::ID {
+                    // Inverse: in = out * effective_tvl / supply.
+                    usdc_plus_exchange::compute_usdc_from_tokens(
+                        quote_params.amount,
+                        self.protocol_tvl,
+                        self.effective_supply,
+                    )?
+                } else {
+                    // Inverse: in = out * supply / effective_tvl.
+                    usdc_plus_exchange::compute_tokens_from_usdc(
+                        quote_params.amount,
+                        self.protocol_tvl,
+                        self.effective_supply,
+                    )?
+                };
                 (inp, quote_params.amount)
             }
         };
@@ -303,12 +299,9 @@ mod tests {
         // Update AMM state.
         amm.update(&account_map).unwrap();
 
-        // Verify rates were set
-        assert!(amm.rate_100_usdc > 0, "USDC rate should be set");
-        assert!(amm.rate_100_usdc_plus > 0, "USDC+ rate should be set");
-
-        println!("Rate for 100 USDC -> USDC+: {}", amm.rate_100_usdc);
-        println!("Rate for 100 USDC+ -> USDC: {}", amm.rate_100_usdc_plus);
+        // Verify variables were set.
+        assert!(amm.protocol_tvl > 0, "USDC rate should be set");
+        assert!(amm.effective_supply > 0, "USDC+ rate should be set");
     }
 
     #[test]
@@ -562,5 +555,19 @@ mod tests {
         assert_eq!(cloned.label(), amm.label());
         assert_eq!(cloned.program_id(), amm.program_id());
         assert_eq!(cloned.key(), amm.key());
+    }
+
+    #[test]
+    fn test_reflect_amm_trait_methods() {
+        let amm = ReflectAmm::new();
+
+        assert_eq!(amm.label(), REFLECT_LABEL);
+        assert_eq!(amm.program_id(), reflect::ID);
+        assert_eq!(amm.key(), usdc_controller::ID);
+        assert!(!amm.has_dynamic_accounts());
+        assert!(!amm.requires_update_for_reserve_mints());
+        assert!(amm.supports_exact_out());
+        assert!(!amm.unidirectional());
+        assert!(amm.is_active());
     }
 }
